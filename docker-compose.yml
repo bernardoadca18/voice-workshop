@@ -1,0 +1,30 @@
+services:
+  f5tts:
+    build: ./f5tts
+    container_name: f5tts
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true
+
+  seedvc:
+    build: ./seedvc
+    container_name: seedvc
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true
