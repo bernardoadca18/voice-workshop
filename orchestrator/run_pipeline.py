@@ -1,36 +1,59 @@
+"""
+Pipeline Kokoro -> fatiamento por silêncio -> Seed-VC por chunk -> concatenação.
+
+Uso via CLI:
+    python3 run_pipeline.py "texto" [run_name]
+
+Uso programático (via api.py):
+    from run_pipeline import gerar_narracao
+    resultado = gerar_narracao(texto, run_name)
+"""
+import glob
+import logging
+import os
 import subprocess
 import sys
-import os
-import requests
-import glob
+import time
+from pathlib import Path
 
-TEXT = sys.argv[1] if len(sys.argv) > 1 else "Texto de teste para gerar o áudio."
-RUN_NAME = sys.argv[2] if len(sys.argv) > 2 else "minha_voz_v1"
+import requests
+
+from audio_chunker import fatiar_por_silencio, salvar_chunks, concatenar_com_crossfade
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+logger = logging.getLogger("run_pipeline")
 
 KOKORO_URL = "http://localhost:8880/v1/audio/speech"
 KOKORO_API_KEY = os.environ.get("KOKORO_API_KEY", "")
-KOKORO_VOICE = "pm_alex"
+KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "pm_alex")
 
 REF_AUDIO_MINHA_VOZ = "/data/reference/voz_referencia.wav"
-F5_OUTPUT_HOST = "./data/f5_output/gerado.wav"
-F5_OUTPUT_CONTAINER = "/data/f5_output/gerado.wav"
-FINAL_OUTPUT = "/data/final_output/resultado.wav"
+
+DATA_DIR = Path("./data")
+KOKORO_OUTPUT_HOST = DATA_DIR / "f5_output" / "gerado.wav"
+CHUNKS_DIR_HOST = DATA_DIR / "chunks"
+CHUNKS_DIR_CONTAINER = "/data/chunks"
+CONVERTED_DIR_HOST = DATA_DIR / "chunks_convertidos"
+CONVERTED_DIR_CONTAINER = "/data/chunks_convertidos"
+FINAL_OUTPUT_HOST = DATA_DIR / "final_output" / "resultado_final.wav"
 
 CHECKPOINT = "/data/checkpoints/ft_model.pth"
-CONFIG = f"/data/checkpoints/{RUN_NAME}.yml"
+DIFFUSION_STEPS = 50
 
 
-def run_in_container(container, cmd):
+def run_in_container(container: str, cmd: str) -> None:
     full_cmd = ["docker", "exec", container, "bash", "-c", cmd]
-    print(f"[{container}] {cmd}")
+    logger.info("[%s] %s", container, cmd)
     result = subprocess.run(full_cmd, capture_output=True, text=True)
-    print(result.stdout)
+    if result.stdout:
+        logger.info(result.stdout)
     if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
+        logger.error(result.stderr)
         raise RuntimeError(f"Falha no container {container}")
 
 
-def step_1_kokoro():
+def gerar_audio_kokoro(texto: str, saida_host: Path = KOKORO_OUTPUT_HOST) -> Path:
+    """Etapa 1: gera o áudio base contínuo, sem fatiar o texto."""
     headers = {"Content-Type": "application/json"}
     if KOKORO_API_KEY:
         headers["Authorization"] = f"Bearer {KOKORO_API_KEY}"
@@ -38,53 +61,91 @@ def step_1_kokoro():
     resp = requests.post(
         KOKORO_URL,
         headers=headers,
-        json={
-            "model": "tts-1",
-            "input": TEXT,
-            "voice": KOKORO_VOICE,
-            "response_format": "wav",
-        },
-        timeout=60,
+        json={"model": "tts-1", "input": texto, "voice": KOKORO_VOICE, "response_format": "wav"},
+        timeout=120,
     )
     resp.raise_for_status()
 
-    os.makedirs(os.path.dirname(F5_OUTPUT_HOST), exist_ok=True)
-    with open(F5_OUTPUT_HOST, "wb") as f:
-        f.write(resp.content)
-    print(f"[kokoro] áudio base salvo em {F5_OUTPUT_HOST} ({len(resp.content)} bytes)")
+    saida_host.parent.mkdir(parents=True, exist_ok=True)
+    saida_host.write_bytes(resp.content)
+    logger.info("kokoro: áudio base salvo em %s (%d bytes)", saida_host, len(resp.content))
+    return saida_host
 
 
-def step_2_seedvc(use_finetuned=True):
+def converter_chunk_seedvc(
+    chunk_path_container: str, run_name: str, indice: int
+) -> Path:
+    """Roda o Seed-VC para um único chunk e retorna o path do arquivo convertido,
+    já renomeado deterministicamente (part_XXX.wav) para preservar a ordem
+    na concatenação -- o Seed-VC gera nomes automáticos que dependem dos
+    parâmetros usados, então capturamos o mais recente logo após a chamada."""
+    config = f"/data/checkpoints/{run_name}.yml"
+    antes = set(glob.glob(f"{CONVERTED_DIR_HOST}/vc_*.wav"))
+
     cmd = (
         f'python3 inference.py '
-        f'--source "{F5_OUTPUT_CONTAINER}" '
+        f'--source "{chunk_path_container}" '
         f'--target "{REF_AUDIO_MINHA_VOZ}" '
-        f'--output "/data/final_output" '
-        f'--diffusion-steps 50 '
+        f'--output "{CONVERTED_DIR_CONTAINER}" '
+        f'--diffusion-steps {DIFFUSION_STEPS} '
         f'--length-adjust 1.0 '
         f'--inference-cfg-rate 0.7 '
         f'--f0-condition False '
-        f'--fp16 True'
+        f'--fp16 True '
+        f'--checkpoint "{CHECKPOINT}" '
+        f'--config "{config}"'
     )
-    if use_finetuned:
-        cmd += f' --checkpoint "{CHECKPOINT}" --config "{CONFIG}"'
     run_in_container("seedvc", cmd)
 
-def obter_ultimo_output():
-    arquivos = glob.glob("./data/final_output/vc_*.wav")
-    if not arquivos:
-        raise RuntimeError("Nenhum arquivo de saída encontrado em ./data/final_output/")
-    return max(arquivos, key=lambda p: __import__("os").path.getmtime(p))
+    depois = set(glob.glob(f"{CONVERTED_DIR_HOST}/vc_*.wav"))
+    novos = depois - antes
+    if not novos:
+        raise RuntimeError(f"Seed-VC não gerou saída nova para o chunk {indice}")
+    gerado = Path(max(novos, key=lambda p: os.path.getmtime(p)))
+
+    renomeado = CONVERTED_DIR_HOST / f"part_{indice:03d}.wav"
+    gerado.rename(renomeado)
+    return renomeado
+
+
+def gerar_narracao(texto: str, run_name: str = "minha_voz_v1") -> Path:
+    """
+    Função principal, ponta a ponta. É o que a API chama.
+
+    1. Kokoro gera o bloco contínuo (prosódia intacta).
+    2. Fatiamento por silêncio real do áudio já gerado (não do texto).
+    3. Cada chunk passa pelo Seed-VC individualmente (janela 4-8s validada).
+    4. Concatenação com crossfade.
+    """
+    t0 = time.time()
+
+    audio_base = gerar_audio_kokoro(texto)
+
+    chunks = fatiar_por_silencio(audio_base)
+    logger.info("fatiamento: %d chunk(s) gerado(s) a partir do áudio contínuo", len(chunks))
+    chunk_paths_host = salvar_chunks(chunks, CHUNKS_DIR_HOST)
+
+    CONVERTED_DIR_HOST.mkdir(parents=True, exist_ok=True)
+    convertidos = []
+    for i, chunk_path in enumerate(chunk_paths_host, start=1):
+        nome_arquivo = chunk_path.name
+        chunk_path_container = f"{CHUNKS_DIR_CONTAINER}/{nome_arquivo}"
+        convertido = converter_chunk_seedvc(chunk_path_container, run_name, i)
+        convertidos.append(convertido)
+        logger.info("seed-vc: chunk %d/%d convertido -> %s", i, len(chunk_paths_host), convertido)
+
+    resultado = concatenar_com_crossfade(convertidos, FINAL_OUTPUT_HOST)
+
+    logger.info("pipeline concluído em %.1fs -> %s", time.time() - t0, resultado)
+    return resultado
+
 
 if __name__ == "__main__":
+    texto_cli = sys.argv[1] if len(sys.argv) > 1 else "Texto de teste para gerar o áudio."
+    run_name_cli = sys.argv[2] if len(sys.argv) > 2 else "minha_voz_v1"
+
     if not KOKORO_API_KEY:
-        print("AVISO: KOKORO_API_KEY não definida no ambiente — a chamada vai falhar com 401 se a API exigir auth.", file=sys.stderr)
+        logger.warning("KOKORO_API_KEY não definida -- a chamada falha com 401 se a API exigir auth")
 
-    print("== Etapa 1: Kokoro (prosódia, via API HTTP) ==")
-    step_1_kokoro()
-
-    print(f"== Etapa 2: seed-vc fine-tunado ({RUN_NAME}) (transferência de timbre) ==")
-    step_2_seedvc(use_finetuned=True)
-
-    resultado = obter_ultimo_output()
+    resultado = gerar_narracao(texto_cli, run_name_cli)
     print(f"Pronto! Resultado em {resultado}")
