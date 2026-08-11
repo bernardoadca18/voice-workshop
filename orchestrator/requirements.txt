@@ -1,0 +1,4 @@
+requests
+pydub
+fastapi
+uvicorn[standard]
