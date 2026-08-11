@@ -1,9 +1,12 @@
 services:
-  f5tts:
-    build: ./f5tts
-    container_name: f5tts
+  kokoro:
+    image: hwdsl2/kokoro-server:cuda
+    container_name: kokoro
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
     volumes:
-      - ./data:/data
+      - kokoro-data:/var/lib/kokoro
     deploy:
       resources:
         reservations:
@@ -11,8 +14,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    tty: true
-    stdin_open: true
 
   seedvc:
     build: ./seedvc
@@ -28,3 +29,7 @@ services:
               capabilities: [gpu]
     tty: true
     stdin_open: true
+
+volumes:
+  kokoro-data:
+    name: kokoro-data

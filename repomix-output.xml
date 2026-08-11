@@ -1,0 +1,283 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+f5tts/
+  Dockerfile
+orchestrator/
+  run_pipeline.py
+  train_voice.py
+seedvc/
+  Dockerfile
+.gitignore
+docker-compose.yml
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="f5tts/Dockerfile">
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y python3 python3-pip git ffmpeg && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install f5-tts
+
+WORKDIR /app
+CMD ["tail", "-f", "/dev/null"]
+</file>
+
+<file path="orchestrator/train_voice.py">
+"""
+Fine-tuning do seed-vc na própria voz.
+
+Uso:
+    python3 train_voice.py [run_name] [max_steps]
+
+Pré-requisito: os 64 (ou quantos forem) arquivos .wav tratados devem estar em
+    data/train_dataset/
+Não precisa de subpastas nem transcrição -- só os áudios de 1-30s cada.
+"""
+import subprocess
+import sys
+
+RUN_NAME = sys.argv[1] if len(sys.argv) > 1 else "minha_voz_v1"
+MAX_STEPS = sys.argv[2] if len(sys.argv) > 2 else "1000"
+
+# Config de fine-tuning para voice conversion "offline" (não singing, não real-time)
+CONFIG = "./configs/presets/config_dit_mel_seed_uvit_whisper_small_wavenet.yml"
+DATASET_DIR = "/data/train_dataset"
+
+
+def run_in_container(container, cmd):
+    full_cmd = ["docker", "exec", "-it", container, "bash", "-c", cmd]
+    print(f"[{container}] {cmd}")
+    result = subprocess.run(full_cmd)
+    if result.returncode != 0:
+        raise RuntimeError(f"Falha no container {container}")
+
+
+def train():
+    cmd = (
+        f'python3 train.py '
+        f'--config "{CONFIG}" '
+        f'--dataset-dir "{DATASET_DIR}" '
+        f'--run-name "{RUN_NAME}" '
+        f'--batch-size 2 '
+        f'--max-steps {MAX_STEPS} '
+        f'--max-epochs 1000 '
+        f'--save-every 100 '
+        f'--num-workers 0'
+    )
+    run_in_container("seedvc", cmd)
+
+
+if __name__ == "__main__":
+    print(f"== Fine-tuning seed-vc | run-name={RUN_NAME} | max-steps={MAX_STEPS} ==")
+    train()
+    print(
+        f"Concluído. Checkpoint deve estar em "
+        f"./runs/{RUN_NAME}/ft_model.pth dentro do container seedvc "
+        f"(equivalente a /app/runs/{RUN_NAME}/ft_model.pth)."
+    )
+    print(
+        "Copie o checkpoint e o config para /data/checkpoints/ para reuso fora do container, ex:\n"
+        f"  docker exec seedvc cp /app/runs/{RUN_NAME}/ft_model.pth /data/checkpoints/\n"
+        f"  docker exec seedvc cp {CONFIG} /data/checkpoints/{RUN_NAME}.yml"
+    )
+</file>
+
+<file path="seedvc/Dockerfile">
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y python3 python3-pip git ffmpeg && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/Plachtaa/seed-vc.git /app
+WORKDIR /app
+RUN pip3 install -r requirements.txt
+
+CMD ["tail", "-f", "/dev/null"]
+</file>
+
+<file path="docker-compose.yml">
+services:
+  kokoro:
+    image: hwdsl2/kokoro-server:cuda
+    container_name: kokoro
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    volumes:
+      - kokoro-data:/var/lib/kokoro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  seedvc:
+    build: ./seedvc
+    container_name: seedvc
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true
+
+volumes:
+  kokoro-data:
+    name: kokoro-data
+</file>
+
+<file path="README.md">
+readme
+</file>
+
+<file path="orchestrator/run_pipeline.py">
+import subprocess
+import sys
+import os
+import requests
+import glob
+
+TEXT = sys.argv[1] if len(sys.argv) > 1 else "Texto de teste para gerar o áudio."
+RUN_NAME = sys.argv[2] if len(sys.argv) > 2 else "minha_voz_v1"
+
+KOKORO_URL = "http://localhost:8880/v1/audio/speech"
+KOKORO_API_KEY = os.environ.get("KOKORO_API_KEY", "")
+KOKORO_VOICE = "pm_alex"
+
+REF_AUDIO_MINHA_VOZ = "/data/reference/voz_referencia.wav"
+F5_OUTPUT_HOST = "./data/f5_output/gerado.wav"
+F5_OUTPUT_CONTAINER = "/data/f5_output/gerado.wav"
+FINAL_OUTPUT = "/data/final_output/resultado.wav"
+
+CHECKPOINT = "/data/checkpoints/ft_model.pth"
+CONFIG = f"/data/checkpoints/{RUN_NAME}.yml"
+
+
+def run_in_container(container, cmd):
+    full_cmd = ["docker", "exec", container, "bash", "-c", cmd]
+    print(f"[{container}] {cmd}")
+    result = subprocess.run(full_cmd, capture_output=True, text=True)
+    print(result.stdout)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        raise RuntimeError(f"Falha no container {container}")
+
+
+def step_1_kokoro():
+    headers = {"Content-Type": "application/json"}
+    if KOKORO_API_KEY:
+        headers["Authorization"] = f"Bearer {KOKORO_API_KEY}"
+
+    resp = requests.post(
+        KOKORO_URL,
+        headers=headers,
+        json={
+            "model": "tts-1",
+            "input": TEXT,
+            "voice": KOKORO_VOICE,
+            "response_format": "wav",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+
+    os.makedirs(os.path.dirname(F5_OUTPUT_HOST), exist_ok=True)
+    with open(F5_OUTPUT_HOST, "wb") as f:
+        f.write(resp.content)
+    print(f"[kokoro] áudio base salvo em {F5_OUTPUT_HOST} ({len(resp.content)} bytes)")
+
+
+def step_2_seedvc(use_finetuned=True):
+    cmd = (
+        f'python3 inference.py '
+        f'--source "{F5_OUTPUT_CONTAINER}" '
+        f'--target "{REF_AUDIO_MINHA_VOZ}" '
+        f'--output "/data/final_output" '
+        f'--diffusion-steps 50 '
+        f'--length-adjust 1.0 '
+        f'--inference-cfg-rate 0.7 '
+        f'--f0-condition False '
+        f'--fp16 True'
+    )
+    if use_finetuned:
+        cmd += f' --checkpoint "{CHECKPOINT}" --config "{CONFIG}"'
+    run_in_container("seedvc", cmd)
+
+def obter_ultimo_output():
+    arquivos = glob.glob("./data/final_output/vc_*.wav")
+    if not arquivos:
+        raise RuntimeError("Nenhum arquivo de saída encontrado em ./data/final_output/")
+    return max(arquivos, key=lambda p: __import__("os").path.getmtime(p))
+
+if __name__ == "__main__":
+    if not KOKORO_API_KEY:
+        print("AVISO: KOKORO_API_KEY não definida no ambiente — a chamada vai falhar com 401 se a API exigir auth.", file=sys.stderr)
+
+    print("== Etapa 1: Kokoro (prosódia, via API HTTP) ==")
+    step_1_kokoro()
+
+    print(f"== Etapa 2: seed-vc fine-tunado ({RUN_NAME}) (transferência de timbre) ==")
+    step_2_seedvc(use_finetuned=True)
+
+    resultado = obter_ultimo_output()
+    print(f"Pronto! Resultado em {resultado}")
+</file>
+
+<file path=".gitignore">
+.env
+.venv
+train_dataset
+data
+</file>
+
+</files>
