@@ -25,7 +25,7 @@ KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "pm_alex")
 
 REF_AUDIO_MINHA_VOZ = "/data/reference/voz_referencia.wav"
 
-DATA_DIR = Path("./data")
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHECKPOINTS_DIR_HOST = DATA_DIR / "checkpoints"
 FINAL_OUTPUT_DIR_HOST = DATA_DIR / "final_output"
 
