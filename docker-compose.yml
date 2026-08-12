@@ -7,6 +7,8 @@ services:
       - "8880:8880"
     volumes:
       - kokoro-data:/var/lib/kokoro
+    environment:
+      - KOKORO_API_KEY=${KOKORO_API_KEY}
     deploy:
       resources:
         reservations:
