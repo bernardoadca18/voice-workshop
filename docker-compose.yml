@@ -42,6 +42,8 @@ services:
     environment:
       - KOKORO_URL=http://kokoro:8880/v1/audio/speech
       - SEEDVC_URL=http://seedvc:8001
+      - KOKORO_API_KEY=${KOKORO_API_KEY}
+      - KOKORO_VOICE=${KOKORO_VOICE:-pm_alex}
     depends_on:
       - kokoro
       - seedvc

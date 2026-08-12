@@ -15,7 +15,8 @@ def converter_chunk_seedvc(
         f"{SEEDVC_URL}/convert",
         json={
             "source_path": chunk_path_container,
-            "target_path": saida_container,
+            "target_path": REF_AUDIO_MINHA_VOZ,
+            "output_path": saida_container,
             "run_name": run_name,
             "diffusion_steps": DIFFUSION_STEPS,
         },
