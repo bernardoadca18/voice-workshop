@@ -1,5 +1,4 @@
 requests
 pydub
-audioop-lts
 fastapi
 uvicorn[standard]
