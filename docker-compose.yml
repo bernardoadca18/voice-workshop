@@ -18,6 +18,9 @@ services:
   seedvc:
     build: ./seedvc
     container_name: seedvc
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
     volumes:
       - ./data:/data
     deploy:
@@ -27,8 +30,21 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    tty: true
-    stdin_open: true
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: voice-orchestrator
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data:/data
+    environment:
+      - KOKORO_URL=http://kokoro:8880/v1/audio/speech
+      - SEEDVC_URL=http://seedvc:8001
+    depends_on:
+      - kokoro
+      - seedvc
 
 volumes:
   kokoro-data:
