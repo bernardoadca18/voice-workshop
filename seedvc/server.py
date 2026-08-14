@@ -28,6 +28,10 @@ app = FastAPI(title="Seed-VC Service")
 # usada nesta sessão, mas o caso comum é 1 run_name só, carregado 1x
 _modelo_cache: dict[str, tuple] = {}
 
+# cache de conditioning de referência: evita recalcular S_ori, mel2, style2, prompt_condition
+# a cada chamada quando target_path/run_name não mudam (que é sempre neste projeto)
+_ref_cache: dict[tuple[str, str], tuple] = {}  # (run_name, target_path) -> (mel2, style2, prompt_condition)
+
 
 def _carregar(run_name: str, fp16: bool = True) -> tuple:
     if run_name not in _modelo_cache:
@@ -42,6 +46,53 @@ def _carregar(run_name: str, fp16: bool = True) -> tuple:
         _modelo_cache[run_name] = load_models(args)
         logger.info("Modelo carregado em %.1fs", time.time() - t0)
     return _modelo_cache[run_name]
+
+
+def _obter_conditioning_referencia(
+    run_name: str,
+    target_path: str,
+    model,
+    semantic_fn,
+    campplus_model,
+    mel_fn,
+    sr: int,
+) -> tuple:
+    """
+    Obtém o conditioning de referência (mel2, style2, prompt_condition) do áudio alvo.
+    Usa cache para evitar recalcular a cada chamada quando target_path/run_name não mudam.
+
+    Returns:
+        Tupla (mel2, style2, prompt_condition)
+    """
+    chave = (run_name, target_path)
+    if chave in _ref_cache:
+        logger.debug("Reutilizando conditioning de referência cacheado para %s", chave)
+        return _ref_cache[chave]
+
+    logger.info("Calculando conditioning de referência (1x) para run_name=%s target_path=%s", run_name, target_path)
+
+    ref_audio = librosa.load(target_path, sr=sr)[0]
+    ref_audio = torch.tensor(ref_audio[:sr * 25]).unsqueeze(0).float().to(device)
+
+    ori_waves_16k = torchaudio.functional.resample(ref_audio, sr, 16000)
+    S_ori = semantic_fn(ori_waves_16k)
+
+    mel2 = mel_fn(ref_audio.to(device).float())
+    target2_lengths = torch.LongTensor([mel2.size(2)]).to(mel2.device)
+
+    feat2 = torchaudio.compliance.kaldi.fbank(
+        ori_waves_16k, num_mel_bins=80, dither=0, sample_frequency=16000
+    )
+    feat2 = feat2 - feat2.mean(dim=0, keepdim=True)
+    style2 = campplus_model(feat2.unsqueeze(0))
+
+    prompt_condition, _, _, _, _ = model.length_regulator(
+        S_ori, ylens=target2_lengths, n_quantizers=3, f0=None
+    )
+
+    resultado = (mel2, style2, prompt_condition)
+    _ref_cache[chave] = resultado
+    return resultado
 
 
 @torch.no_grad()
@@ -59,7 +110,6 @@ def converter(
     sr = mel_fn_args["sampling_rate"]
 
     source_audio = librosa.load(source_path, sr=sr)[0]
-    ref_audio = librosa.load(target_path, sr=sr)[0]
 
     hop_length = 256
     max_context_window = sr // hop_length * 30
@@ -67,7 +117,6 @@ def converter(
     overlap_wave_len = overlap_frame_len * hop_length
 
     source_audio = torch.tensor(source_audio).unsqueeze(0).float().to(device)
-    ref_audio = torch.tensor(ref_audio[:sr * 25]).unsqueeze(0).float().to(device)
 
     converted_waves_16k = torchaudio.functional.resample(source_audio, sr, 16000)
     if converted_waves_16k.size(-1) <= 16000 * 30:
@@ -90,23 +139,16 @@ def converter(
             traversed_time += 30 * 16000 if traversed_time == 0 else chunk.size(-1) - 16000 * overlapping_time
         S_alt = torch.cat(S_alt_list, dim=1)
 
-    ori_waves_16k = torchaudio.functional.resample(ref_audio, sr, 16000)
-    S_ori = semantic_fn(ori_waves_16k)
+    # Usa cache de conditioning de referência (evita recálculo redundante)
+    mel2, style2, prompt_condition = _obter_conditioning_referencia(
+        run_name, target_path, model, semantic_fn, campplus_model, mel_fn, sr
+    )
 
     mel = mel_fn(source_audio.to(device).float())
-    mel2 = mel_fn(ref_audio.to(device).float())
 
     target_lengths = torch.LongTensor([int(mel.size(2) * length_adjust)]).to(mel.device)
-    target2_lengths = torch.LongTensor([mel2.size(2)]).to(mel2.device)
-
-    feat2 = torchaudio.compliance.kaldi.fbank(
-        ori_waves_16k, num_mel_bins=80, dither=0, sample_frequency=16000
-    )
-    feat2 = feat2 - feat2.mean(dim=0, keepdim=True)
-    style2 = campplus_model(feat2.unsqueeze(0))
 
     cond, _, codes, _, _ = model.length_regulator(S_alt, ylens=target_lengths, n_quantizers=3, f0=None)
-    prompt_condition, _, codes, _, _ = model.length_regulator(S_ori, ylens=target2_lengths, n_quantizers=3, f0=None)
 
     max_source_window = max_context_window - mel2.size(2)
     processed_frames = 0
@@ -161,6 +203,15 @@ class ConvertRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "modelos_carregados": list(_modelo_cache.keys())}
+
+
+@app.post("/cache/limpar")
+def limpar_cache():
+    """Invalida o cache de conditioning de referência. Útil quando a amostra de referência é trocada sem reiniciar o container."""
+    global _ref_cache
+    _ref_cache = {}
+    logger.info("Cache de conditioning de referência invalidado")
+    return {"status": "ok", "mensagem": "Cache de conditioning de referência invalidado"}
 
 
 @app.post("/convert")

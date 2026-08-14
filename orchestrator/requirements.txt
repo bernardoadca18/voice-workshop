@@ -2,3 +2,6 @@ requests
 pydub
 fastapi
 uvicorn[standard]
+pyloudnorm
+soundfile
+tenacity

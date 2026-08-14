@@ -16,6 +16,13 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    # Fallback: TCP connect healthcheck (Kokoro não expõe endpoint de health documentado)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8880/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   seedvc:
     build: ./seedvc
@@ -47,8 +54,10 @@ services:
       - KOKORO_API_KEY=${KOKORO_API_KEY}
       - KOKORO_VOICE=${KOKORO_VOICE:-pm_alex}
     depends_on:
-      - kokoro
-      - seedvc
+      kokoro:
+        condition: service_healthy
+      seedvc:
+        condition: service_healthy
 
 volumes:
   kokoro-data:

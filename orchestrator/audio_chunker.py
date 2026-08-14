@@ -10,6 +10,7 @@ segmentos entre eles até atingir a janela alvo de duração, cortando
 permitido (caso raro, mas tratado para não travar o pipeline).
 """
 import logging
+import os
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -22,6 +23,19 @@ MAX_CHUNK_MS = 8_000
 MIN_SILENCE_LEN_MS = 300
 SILENCE_THRESH_OFFSET_DB = 16  # abaixo da média (dBFS) do próprio áudio
 DESCARTE_MINIMO_MS = 500  # sobras menores que isso no fim são descartadas
+
+# Nível de referência para normalização de chunks antes do crossfade
+TARGET_DBFS = float(os.environ.get("AUDIO_TARGET_DBFS", "-20.0"))
+
+
+def _normalizar_para(chunk: AudioSegment, target_dbfs: float = TARGET_DBFS) -> AudioSegment:
+    """
+    Normaliza um chunk para um dBFS de referência comum.
+    Evita variações de volume entre chunks convertidos independentemente.
+    """
+    if chunk.dBFS == float("-inf"):
+        return chunk
+    return chunk.apply_gain(target_dbfs - chunk.dBFS)
 
 
 def fatiar_por_silencio(
@@ -69,8 +83,8 @@ def fatiar_por_silencio(
         # a mandar um bloco gigante pro Seed-VC.
         corte_forcado = inicio_chunk + max_chunk_ms
         logger.warning(
-            "audio_chunker.corte_forcado",
-            extra={"em_ms": corte_forcado, "motivo": "sem silêncio no intervalo permitido"},
+            "audio_chunker.corte_forcado em_ms=%d motivo='sem silêncio no intervalo permitido'",
+            corte_forcado,
         )
         cortes.append(corte_forcado)
         inicio_chunk = corte_forcado
@@ -90,8 +104,9 @@ def fatiar_por_silencio(
         chunks.append(audio[ini:fim])
 
     logger.info(
-        "audio_chunker.concluido",
-        extra={"total_chunks": len(chunks), "duracao_total_ms": duracao_total},
+        "audio_chunker.concluido total_chunks=%d duracao_total_ms=%d",
+        len(chunks),
+        duracao_total,
     )
     return chunks
 
@@ -116,20 +131,25 @@ def salvar_chunks(chunks: list[AudioSegment], diretorio_saida: str | Path) -> li
 def concatenar_com_crossfade(
     caminhos_convertidos: list[str | Path],
     caminho_saida: str | Path,
-    crossfade_ms: int = 80,
+    crossfade_ms: int = 100,
 ) -> Path:
     """
     Concatena os pedaços já convertidos pelo Seed-VC, aplicando um
     crossfade curto entre eles em vez de emenda seca -- suaviza qualquer
     descontinuidade de energia/timbre entre conversões feitas de forma
     independente por chunk.
+
+    Cada chunk é normalizado para TARGET_DBFS antes do crossfade para
+    evitar variações de volume perceptíveis entre chunks.
     """
     if not caminhos_convertidos:
         raise ValueError("Nenhum arquivo convertido para concatenar")
 
-    resultado = AudioSegment.from_file(caminhos_convertidos[0])
-    for caminho in caminhos_convertidos[1:]:
-        proximo = AudioSegment.from_file(caminho)
+    # Normaliza cada segmento antes do crossfade
+    segmentos = [_normalizar_para(AudioSegment.from_file(p)) for p in caminhos_convertidos]
+
+    resultado = segmentos[0]
+    for proximo in segmentos[1:]:
         # crossfade não pode ser maior que o menor dos dois segmentos
         cf = min(crossfade_ms, len(resultado), len(proximo))
         resultado = resultado.append(proximo, crossfade=cf)
