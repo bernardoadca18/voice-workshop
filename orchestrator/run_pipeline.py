@@ -47,8 +47,8 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHECKPOINTS_DIR_HOST = DATA_DIR / "checkpoints"
 FINAL_OUTPUT_DIR_HOST = DATA_DIR / "final_output"
 
-DIFFUSION_STEPS_DRAFT = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_DRAFT", "25"))
-DIFFUSION_STEPS_FINAL = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_FINAL", "45"))
+DIFFUSION_STEPS_DRAFT = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_DRAFT", "35"))
+DIFFUSION_STEPS_FINAL = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_FINAL", "75"))
 SEEDVC_TIMEOUT_S = 300  # não deixa a chamada pendurada indefinidamente
 
 

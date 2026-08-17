@@ -129,7 +129,7 @@ def converter(
     run_name: str,
     diffusion_steps: int = 50,
     length_adjust: float = 1.0,
-    inference_cfg_rate: float = 0.7,
+    inference_cfg_rate: float = 0.85,
     fp16: bool = True,
 ) -> str:
     model, semantic_fn, f0_fn, vocoder_fn, campplus_model, mel_fn, mel_fn_args = _carregar(run_name, fp16)
@@ -222,7 +222,7 @@ class ConvertRequest(BaseModel):
     run_name: str = "minha_voz_v1"
     diffusion_steps: int = 50
     length_adjust: float = 1.0
-    inference_cfg_rate: float = 0.7
+    inference_cfg_rate: float = 0.85
     fp16: bool = True
 
 
