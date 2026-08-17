@@ -63,9 +63,25 @@ def _carregar(run_name: str, fp16: bool = True) -> tuple:
                 f0_condition=False,
             )
         else:
+            # Carrega checkpoint específico por run_name
+            checkpoint_path = f"/data/checkpoints/{run_name}.pth"
+            config_path = f"/data/checkpoints/{run_name}.yml"
+
+            if not Path(checkpoint_path).exists():
+                raise FileNotFoundError(
+                    f"Checkpoint não encontrado: {checkpoint_path}\n"
+                    f"Certifique-se de que o modelo '{run_name}' foi treinado e exportado."
+                )
+
+            if not Path(config_path).exists():
+                raise FileNotFoundError(
+                    f"Config não encontrado: {config_path}\n"
+                    f"Certifique-se de que o modelo '{run_name}' foi treinado e exportado."
+                )
+
             args = argparse.Namespace(
-                checkpoint="/data/checkpoints/ft_model.pth",
-                config=f"/data/checkpoints/{run_name}.yml",
+                checkpoint=checkpoint_path,
+                config=config_path,
                 fp16=fp16,
                 f0_condition=False,
             )

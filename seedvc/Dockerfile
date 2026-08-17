@@ -3,9 +3,13 @@ FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 RUN apt-get update && apt-get install -y python3 python3-pip git ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
 # Clone do repositório Seed-VC upstream
-# NOTA: Para reprodutibilidade total, descomente a linha do checkout com o hash específico:
-# RUN git clone https://github.com/Plachtaa/seed-vc.git /app && cd /app && git checkout <commit-hash>
-RUN git clone https://github.com/Plachtaa/seed-vc.git /app
+# Para reprodutibilidade, fixamos o commit hash específico.
+# Atualize este hash se precisar de uma versão diferente do upstream.
+ARG SEEDVC_COMMIT=51383efd921027683c89e5348211d93ff12ac2a8
+
+RUN git clone https://github.com/Plachtaa/seed-vc.git /app \
+    && cd /app \
+    && git checkout "$SEEDVC_COMMIT"
 WORKDIR /app
 RUN pip3 install -r requirements.txt fastapi "uvicorn[standard]"
 

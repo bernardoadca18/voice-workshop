@@ -57,12 +57,27 @@ class RunNameInvalido(Exception):
 
 
 def validar_run_name(run_name: str) -> None:
-    checkpoint = CHECKPOINTS_DIR_HOST / "ft_model.pth"
+    """
+    Valida se o run_name possui checkpoint e config treinados.
+    zero_shot é tratado separadamente (não requer checkpoint).
+    """
+    if run_name == "zero_shot":
+        # zero_shot usa modelo pretrained do Seed-VC, não requer checkpoint local
+        return
+
+    checkpoint = CHECKPOINTS_DIR_HOST / f"{run_name}.pth"
     config = CHECKPOINTS_DIR_HOST / f"{run_name}.yml"
+
     if not checkpoint.exists():
-        raise RunNameInvalido(f"Checkpoint não encontrado: {checkpoint}")
+        raise RunNameInvalido(
+            f"Checkpoint não encontrado: {checkpoint}\n"
+            f"Certifique-se de treinar o modelo '{run_name}' antes de usá-lo na inferência."
+        )
     if not config.exists():
-        raise RunNameInvalido(f"Config não encontrado para run_name='{run_name}': {config}")
+        raise RunNameInvalido(
+            f"Config não encontrado para run_name='{run_name}': {config}\n"
+            f"Certifique-se de treinar o modelo '{run_name}' antes de usá-lo na inferência."
+        )
 
 
 def gerar_audio_kokoro(texto: str, saida_host: Path) -> Path:

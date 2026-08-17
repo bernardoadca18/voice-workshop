@@ -54,7 +54,7 @@ Content-Type: application/json
 | Campo | Tipo | Obrigatório | Descrição |
 |-------|------|-------------|-----------|
 | texto | string | Sim | Texto a ser narrado. Não pode estar vazio. |
-| run_name | string | Não | Nome do modelo treinado. Deve ter config correspondente em `/data/checkpoints/{run_name}.yml` |
+| run_name | string | Não | Nome do modelo treinado. Deve ter checkpoint e config correspondentes em `/data/checkpoints/{run_name}.pth` e `/data/checkpoints/{run_name}.yml`. Use "zero_shot" para modelo pretrained sem fine-tuning. |
 | qualidade | string | Não | "draft" para previews rápidos (25 passos), "final" para qualidade máxima (45 passos) |
 
 **Response 200:**
@@ -74,7 +74,7 @@ Content-Type: application/json
 ou
 ```json
 {
-  "detail": "Checkpoint não encontrado: /data/checkpoints/ft_model.pth"
+  "detail": "Checkpoint não encontrado: /data/checkpoints/bernardo_gold_v1.pth\nCertifique-se de treinar o modelo 'bernardo_gold_v1' antes de usá-lo na inferência."
 }
 ```
 
@@ -84,7 +84,7 @@ curl -X POST http://localhost:9000/narrar \
   -H "Content-Type: application/json" \
   -d '{
     "texto": "Olá, este é um exemplo de narração.",
-    "run_name": "minha_voz_v1",
+    "run_name": "bernardo_gold_v1",
     "qualidade": "draft"
   }'
 ```
@@ -206,13 +206,103 @@ curl -o audio.wav http://localhost:9000/jobs/c892b318729c4893a8715fdaa0b2e44b/au
 
 ---
 
+## Múltiplos Modelos (Multi-Checkpoint)
+
+O Voice Workshop suporta múltiplos modelos treinados, cada um identificado por um `run_name`.
+
+### Estrutura de Checkpoints
+
+```
+data/checkpoints/
+├── bernardo_gold_v1.pth    # Modelo treinado com dataset gold_v1
+├── bernardo_gold_v1.yml    # Config do modelo
+├── bernardo_full_v1.pth    # Modelo treinado com dataset full_v1
+└── bernardo_full_v1.yml    # Config do modelo
+```
+
+### Usando Diferentes Modelos
+
+```bash
+# Usar modelo gold_v1
+curl -X POST http://localhost:9000/narrar \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texto": "Texto narrado com modelo gold.",
+    "run_name": "bernardo_gold_v1",
+    "qualidade": "final"
+  }'
+
+# Usar modelo full_v1
+curl -X POST http://localhost:9000/narrar \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texto": "Texto narrado com modelo full.",
+    "run_name": "bernardo_full_v1",
+    "qualidade": "final"
+  }'
+```
+
+### Modo Zero-Shot
+
+Use `run_name="zero_shot"` para usar o modelo pretrained oficial do Seed-VC sem fine-tuning:
+
+```bash
+curl -X POST http://localhost:9000/narrar \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texto": "Texto sem fine-tuning.",
+    "run_name": "zero_shot",
+    "qualidade": "draft"
+  }'
+```
+
+---
+
+## Treinamento de Modelos
+
+### Treinar Novo Modelo
+
+```bash
+# Treinar dataset gold_v1
+python3 orchestrator/train_voice.py \
+  --dataset gold_v1 \
+  --run-name bernardo_gold_v1
+
+# Treinar dataset full_v1
+python3 orchestrator/train_voice.py \
+  --dataset full_v1 \
+  --run-name bernardo_full_v1
+```
+
+Após o treinamento, o checkpoint será automaticamente publicado em:
+- `/data/checkpoints/{run_name}.pth`
+- `/data/checkpoints/{run_name}.yml`
+
+### Parâmetros de Treinamento
+
+| Parâmetro | Default | Descrição |
+|-----------|---------|-----------|
+| `--dataset` | obrigatório | Nome do dataset (gold_v1, full_v1) |
+| `--run-name` | obrigatório | Nome do modelo/checkpoint final |
+| `--batch-size` | 2 | Batch size (use 1 se OOM) |
+| `--max-steps` | 1000 | Máximo de optimizer steps |
+| `--max-epochs` | 1000 | Máximo de epochs |
+| `--save-every` | 100 | Salvar checkpoint a cada N steps |
+| `--num-workers` | 0 | DataLoader workers |
+| `--gpu` | 0 | GPU ID |
+| `--force` | - | Permitir sobrescrever checkpoint existente em /data/checkpoints/ |
+| `--reset-run` | - | Deletar histórico da run antes de treinar (treina do zero) |
+| `--no-export` | - | Não exportar checkpoint após treino |
+
+---
+
 ## Fluxo de Uso Típico
 
 ```bash
 # 1. Criar job
 RESPONSE=$(curl -s -X POST http://localhost:9000/narrar \
   -H "Content-Type: application/json" \
-  -d '{"texto": "Texto de exemplo", "qualidade": "draft"}')
+  -d '{"texto": "Texto de exemplo", "run_name": "bernardo_gold_v1", "qualidade": "draft"}')
 
 JOB_ID=$(echo $RESPONSE | jq -r '.job_id')
 
@@ -279,6 +369,7 @@ response = requests.post(
     "http://localhost:9000/narrar",
     json={
         "texto": "Olá, este é um teste.",
+        "run_name": "bernardo_gold_v1",
         "qualidade": "draft"
     }
 )
@@ -304,10 +395,11 @@ with open("audio.wav", "wb") as f:
 ```javascript
 const axios = require('axios');
 
-async function criarNarracao(texto, qualidade = 'draft') {
+async function criarNarracao(texto, runName = 'bernardo_gold_v1', qualidade = 'draft') {
   // Criar job
   const { data: { job_id } } = await axios.post('http://localhost:9000/narrar', {
     texto,
+    run_name: runName,
     qualidade
   });
 
@@ -342,13 +434,14 @@ criarNarracao('Olá, este é um teste.').then(audio => {
 
 criar_narracao() {
   local texto="$1"
-  local qualidade="${2:-draft}"
-  local output="${3:-audio.wav}"
+  local run_name="${2:-bernardo_gold_v1}"
+  local qualidade="${3:-draft}"
+  local output="${4:-audio.wav}"
   
   # Criar job
   local job_id=$(curl -s -X POST http://localhost:9000/narrar \
     -H "Content-Type: application/json" \
-    -d "{\"texto\": \"$texto\", \"qualidade\": \"$qualidade\"}" \
+    -d "{\"texto\": \"$texto\", \"run_name\": \"$run_name\", \"qualidade\": \"$qualidade\"}" \
     | jq -r '.job_id')
   
   echo "Job criado: $job_id"
@@ -375,7 +468,7 @@ criar_narracao() {
 }
 
 # Uso
-criar_narracao "Olá, este é um exemplo de narração." draft minha_narracao.wav
+criar_narracao "Olá, este é um exemplo de narração." bernardo_gold_v1 draft minha_narracao.wav
 ```
 
 ---
@@ -405,5 +498,5 @@ youtube-upload --title="Minha Narração" audio.wav
 
 ---
 
-**Versão da API**: 0.1.0
-**Última atualização**: 2026-08-14
+**Versão da API**: 0.2.0
+**Última atualização**: 2026-08-17

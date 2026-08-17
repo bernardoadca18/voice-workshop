@@ -35,7 +35,7 @@ Texto → Kokoro (TTS) → Fatiamento por Silêncio → Seed-VC (Voice Conversio
 
 - **Função**: Conversão de voz usando modelo fine-tuned
 - **Endpoint**: `POST /convert`
-- **Carrega modelo**: `/data/checkpoints/ft_model.pth`
+- **Checkpoints**: `/data/checkpoints/{run_name}.pth`
 - **Config por voz**: `/data/checkpoints/{run_name}.yml`
 - **Cache inteligente**: Mantém modelo e conditioning de referência em memória
 
@@ -48,6 +48,153 @@ Texto → Kokoro (TTS) → Fatiamento por Silêncio → Seed-VC (Voice Conversio
   - `GET /jobs/{job_id}` - Consulta status do job
   - `GET /jobs/{job_id}/audio` - Baixa áudio concluído
 
+## Estrutura de Diretórios
+
+```
+data/
+├── train_datasets/           # Datasets de treinamento (múltiplos)
+│   ├── gold_v1/              # Dataset gold (31 WAVs)
+│   │   └── *.wav
+│   └── full_v1/              # Dataset full (56 WAVs)
+│       └── *.wav
+│
+├── runs/                     # Runs de treinamento (persistente)
+│   ├── bernardo_gold_v1/
+│   │   ├── ft_model.pth
+│   │   ├── config_dit_mel_seed_uvit_whisper_small_wavenet.yml
+│   │   └── checkpoints intermediários
+│   └── bernardo_full_v1/
+│       └── ...
+│
+├── checkpoints/              # Modelos publicados (multi-checkpoint)
+│   ├── bernardo_gold_v1.pth
+│   ├── bernardo_gold_v1.yml
+│   ├── bernardo_full_v1.pth
+│   └── bernardo_full_v1.yml
+│
+├── reference/
+│   └── voz_referencia.wav    # Amostra de voz de referência (10-30s)
+│
+├── final_output/             # Áudios finais
+└── work/                     # Arquivos temporários
+```
+
+## Treinamento de Modelos
+
+### Múltiplos Datasets e Checkpoints
+
+O sistema suporta múltiplos datasets de treinamento e múltiplos checkpoints publicados:
+
+- **gold_v1**: Dataset selecionado (31 WAVs de alta qualidade)
+- **full_v1**: Dataset completo (56 WAVs)
+
+Cada treinamento gera um checkpoint independente identificado pelo `run_name`.
+
+### Perfil de Treinamento RTX 2060 12GB
+
+O perfil padrão é otimizado para estabilidade em GPU com 12GB VRAM:
+
+```
+batch_size = 2
+max_steps = 1000
+max_epochs = 1000
+save_every = 100
+num_workers = 0
+gpu = 0
+```
+
+**Prioridade**: estabilidade > evitar CUDA OOM > reprodutibilidade > velocidade
+
+### Treinar Dataset Gold
+
+```bash
+python3 orchestrator/train_voice.py \
+  --dataset gold_v1 \
+  --run-name bernardo_gold_v1
+```
+
+### Treinar Dataset Full
+
+```bash
+python3 orchestrator/train_voice.py \
+  --dataset full_v1 \
+  --run-name bernardo_full_v1
+```
+
+### Parâmetros de Treinamento
+
+| Parâmetro | Default | Descrição |
+|-----------|---------|-----------|
+| `--dataset` | obrigatório | Nome do dataset (gold_v1, full_v1) |
+| `--run-name` | obrigatório | Nome do modelo/checkpoint final |
+| `--batch-size` | 2 | Batch size (use 1 se OOM) |
+| `--max-steps` | 1000 | Máximo de optimizer steps |
+| `--max-epochs` | 1000 | Máximo de epochs |
+| `--save-every` | 100 | Salvar checkpoint a cada N steps |
+| `--num-workers` | 0 | DataLoader workers |
+| `--gpu` | 0 | GPU ID |
+| `--force` | - | Permitir sobrescrever checkpoint existente em /data/checkpoints/ |
+| `--reset-run` | - | Deletar histórico da run antes de treinar (treina do zero) |
+| `--no-export` | - | Não exportar checkpoint após treino |
+
+### Exemplos
+
+```bash
+# Treinamento padrão
+python3 orchestrator/train_voice.py --dataset gold_v1 --run-name bernardo_gold_v1
+
+# Com batch size menor (se OOM)
+python3 orchestrator/train_voice.py --dataset gold_v1 --run-name test_v1 --batch-size 1
+
+# Retreinar do zero (deleta run antiga)
+python3 orchestrator/train_voice.py --dataset gold_v1 --run-name bernardo_gold_v1 --reset-run
+
+# Sobrescrever checkpoint existente (após treino)
+python3 orchestrator/train_voice.py --dataset gold_v1 --run-name bernardo_gold_v1 --force
+
+# Combinação: retreinar e sobrescrever checkpoint
+python3 orchestrator/train_voice.py --dataset gold_v1 --run-name bernardo_gold_v1 --reset-run --force
+```
+
+### Tratamento de CUDA OOM
+
+Se o treinamento falhar com CUDA out of memory:
+
+```
+CUDA OUT OF MEMORY DETECTED
+============================================================
+
+Current batch size: 2
+
+Recommended retry:
+  --batch-size 1
+
+Do not change other training parameters when comparing Gold vs Full.
+```
+
+**Importante**: Não mude outros parâmetros ao comparar datasets. Use apenas `--batch-size 1` como fallback.
+
+### Proteções de Treinamento
+
+1. **Validação de dataset**: Verifica se dataset existe e contém arquivos de áudio
+2. **Validação de run_name**: Apenas caracteres seguros (letras, números, `.`, `_`, `-`)
+3. **Proteção contra overwrite**: Não sobrescreve checkpoint final sem `--force`
+4. **Proteção contra dataset root**: Não aceita `train_datasets` como dataset, deve especificar um específico
+5. **Resume preservado**: Treinamentos interrompidos podem ser retomados com o mesmo comando
+6. **Persistência**: Runs são salvas em `./data/runs/` no host
+
+### Zero-Shot (sem fine-tuning)
+
+O modo `run_name="zero_shot"` usa o modelo pretrained oficial do Seed-VC sem checkpoint local:
+
+```json
+{
+  "texto": "Texto de teste.",
+  "run_name": "zero_shot",
+  "qualidade": "final"
+}
+```
+
 ## Pré-requisitos
 
 ### Arquivos Necessários
@@ -56,10 +203,14 @@ Texto → Kokoro (TTS) → Fatiamento por Silêncio → Seed-VC (Voice Conversio
 data/
 ├── reference/
 │   └── voz_referencia.wav      # Amostra de voz de referência (10-30s)
-├── checkpoints/
-│   ├── ft_model.pth             # Modelo fine-tuned do Seed-VC
-│   └── minha_voz_v1.yml         # Configuração do modelo treinado
-└── final_output/                # Áudios finais serão salvos aqui
+├── train_datasets/
+│   ├── gold_v1/
+│   │   └── *.wav               # 31 arquivos de áudio
+│   └── full_v1/
+│       └── *.wav               # 56 arquivos de áudio
+└── checkpoints/
+    ├── bernardo_gold_v1.pth    # Após treinamento
+    └── bernardo_gold_v1.yml
 ```
 
 ### Variáveis de Ambiente
@@ -128,7 +279,7 @@ curl -X POST http://localhost:9000/narrar \
   -H "Content-Type: application/json" \
   -d '{
     "texto": "Olá, bem-vindo ao teste do sistema de narração.",
-    "run_name": "minha_voz_v1",
+    "run_name": "bernardo_gold_v1",
     "qualidade": "draft"
   }'
 
@@ -257,14 +408,14 @@ O áudio final é normalizado para **-16 LUFS**, padrão para:
 ```bash
 # Verificar se os arquivos existem
 ls -l data/checkpoints/
-# Deve conter: ft_model.pth e minha_voz_v1.yml
+# Deve conter: bernardo_gold_v1.pth e bernardo_gold_v1.yml
 ```
 
 ### Erro: "Config não encontrado para run_name"
 
 ```bash
 # Verificar se o config existe para o run_name usado
-ls -l data/checkpoints/minha_voz_v1.yml
+ls -l data/checkpoints/bernardo_gold_v1.yml
 ```
 
 ### Container Seed-VC não inicia
@@ -340,13 +491,6 @@ docker-compose logs -f
 # Limpar manualmente se necessário
 rm -rf data/work/*
 ```
-
-## Próximos Passos
-
-1. **Treinar modelo personalizado**: Consulte documentação do Seed-VC para fine-tuning
-2. **Ajustar glossário fonético**: Edite `orchestrator/glossario_fonetico.py`
-3. **Configurar múltiplas vozes**: Crie diferentes `run_name` com seus configs
-4. **Integração com CI/CD**: Use a API para automação de produção
 
 ---
 
