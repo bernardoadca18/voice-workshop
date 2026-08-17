@@ -33,20 +33,46 @@ _modelo_cache: dict[str, tuple] = {}
 _ref_cache: dict[tuple[str, str], tuple] = {}  # (run_name, target_path) -> (mel2, style2, prompt_condition)
 
 
+# def _carregar(run_name: str, fp16: bool = True) -> tuple:
+#     if run_name not in _modelo_cache:
+#         logger.info("Carregando modelo para run_name=%s (fp16=%s)...", run_name, fp16)
+#         t0 = time.time()
+#         args = argparse.Namespace(
+#             checkpoint="/data/checkpoints/ft_model.pth",
+#             config=f"/data/checkpoints/{run_name}.yml",
+#             fp16=fp16,
+#             f0_condition=False,
+#         )
+#         _modelo_cache[run_name] = load_models(args)
+#         logger.info("Modelo carregado em %.1fs", time.time() - t0)
+#     return _modelo_cache[run_name]
+
 def _carregar(run_name: str, fp16: bool = True) -> tuple:
     if run_name not in _modelo_cache:
         logger.info("Carregando modelo para run_name=%s (fp16=%s)...", run_name, fp16)
         t0 = time.time()
-        args = argparse.Namespace(
-            checkpoint="/data/checkpoints/ft_model.pth",
-            config=f"/data/checkpoints/{run_name}.yml",
-            fp16=fp16,
-            f0_condition=False,
-        )
+
+        if run_name == "zero_shot":
+            # Checkpoint pretrained oficial do Seed-VC (baixado 1x do HF e cacheado
+            # em /app/checkpoints/hf_cache dentro do container). Sem fine-tune --
+            # o timbre vem só do conditioning feito a partir do target_path.
+            args = argparse.Namespace(
+                checkpoint=None,
+                config=None,
+                fp16=fp16,
+                f0_condition=False,
+            )
+        else:
+            args = argparse.Namespace(
+                checkpoint="/data/checkpoints/ft_model.pth",
+                config=f"/data/checkpoints/{run_name}.yml",
+                fp16=fp16,
+                f0_condition=False,
+            )
+
         _modelo_cache[run_name] = load_models(args)
         logger.info("Modelo carregado em %.1fs", time.time() - t0)
     return _modelo_cache[run_name]
-
 
 def _obter_conditioning_referencia(
     run_name: str,
