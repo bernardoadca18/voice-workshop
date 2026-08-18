@@ -4,6 +4,8 @@
 
 Voice Workshop is a GPU-accelerated, self-hosted pipeline for producing custom-voice narration. It combines Kokoro text-to-speech, silence-aware audio segmentation, Seed-VC voice conversion, smooth chunk reconstruction, and True Peak-safe final loudness processing behind an asynchronous FastAPI service.
 
+For the investigation and remediation of sequential/batch resource exhaustion, see the [Batch Stability Audit](BATCH_STABILITY_AUDIT.md).
+
 > Voice cloning and synthetic speech are sensitive technologies. Use only voices and recordings for which you have the necessary consent and rights, and disclose synthetic audio where applicable.
 
 ## Contents

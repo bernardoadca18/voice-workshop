@@ -3,6 +3,8 @@ services:
     image: hwdsl2/kokoro-server:cuda
     container_name: kokoro
     restart: unless-stopped
+    mem_limit: ${KOKORO_MEMORY_LIMIT:-2500m}
+    cpus: ${KOKORO_CPU_LIMIT:-4.0}
     ports:
       - "8880:8880"
     volumes:
@@ -28,11 +30,23 @@ services:
     build: ./seedvc
     container_name: seedvc
     restart: unless-stopped
+    mem_limit: ${SEEDVC_MEMORY_LIMIT:-5g}
+    cpus: ${SEEDVC_CPU_LIMIT:-4.0}
     ports:
       - "8001:8001"
     volumes:
       - ./data:/data
       - ./data/runs:/app/runs
+    environment:
+      - SEEDVC_MAX_CACHED_MODELS=${SEEDVC_MAX_CACHED_MODELS:-1}
+      - SEEDVC_CPU_THREADS=${SEEDVC_CPU_THREADS:-2}
+      - SEEDVC_INFERENCE_LOCK_TIMEOUT_S=${SEEDVC_INFERENCE_LOCK_TIMEOUT_S:-900}
+      - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+      - OMP_NUM_THREADS=${SEEDVC_CPU_THREADS:-2}
+      - MKL_NUM_THREADS=${SEEDVC_CPU_THREADS:-2}
+      - OPENBLAS_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     deploy:
       resources:
         reservations:
@@ -45,6 +59,8 @@ services:
     build: ./orchestrator
     container_name: voice-orchestrator
     restart: unless-stopped
+    mem_limit: ${ORCHESTRATOR_MEMORY_LIMIT:-768m}
+    cpus: ${ORCHESTRATOR_CPU_LIMIT:-2.0}
     ports:
       - "9000:9000"
     volumes:
@@ -54,6 +70,12 @@ services:
       - SEEDVC_URL=http://seedvc:8001
       - KOKORO_API_KEY=${KOKORO_API_KEY}
       - KOKORO_VOICE=${KOKORO_VOICE:-pm_alex}
+      - MAX_QUEUED_JOBS=${MAX_QUEUED_JOBS:-100}
+      - MAX_RETAINED_JOBS=${MAX_RETAINED_JOBS:-1000}
+      - SEEDVC_TIMEOUT_S=${SEEDVC_TIMEOUT_S:-600}
+      - SEEDVC_DIFFUSION_STEPS_DRAFT=${SEEDVC_DIFFUSION_STEPS_DRAFT:-35}
+      - SEEDVC_DIFFUSION_STEPS_FINAL=${SEEDVC_DIFFUSION_STEPS_FINAL:-75}
+      - AUDIO_TARGET_DBFS=${AUDIO_TARGET_DBFS:--20.0}
       - AUDIO_TARGET_LUFS=${AUDIO_TARGET_LUFS:--16.0}
       - AUDIO_MAX_TRUE_PEAK_DB=${AUDIO_MAX_TRUE_PEAK_DB:--1.0}
       - AUDIO_TRUE_PEAK_TOLERANCE_DB=${AUDIO_TRUE_PEAK_TOLERANCE_DB:-0.02}

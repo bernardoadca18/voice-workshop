@@ -4,6 +4,8 @@
 
 O Voice Workshop é um pipeline auto-hospedado e acelerado por GPU para produzir narrações com voz personalizada. Ele combina síntese de texto com Kokoro, segmentação de áudio por silêncio, conversão de voz com Seed-VC, reconstrução suave dos trechos e pós-processamento final protegido por True Peak, tudo exposto por uma API assíncrona em FastAPI.
 
+Para a investigação e correção do esgotamento de recursos em execuções sequenciais/batch, consulte a [Auditoria de Estabilidade em Batch](BATCH_STABILITY_AUDIT.md).
+
 > Clonagem de voz e fala sintética são tecnologias sensíveis. Use somente vozes e gravações para as quais você tenha consentimento e os direitos necessários, e sinalize o uso de áudio sintético quando aplicável.
 
 ## Sumário

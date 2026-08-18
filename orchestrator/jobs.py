@@ -12,6 +12,7 @@ Migração futura para Redis/SQLite seria necessária se:
 
 Por enquanto, manter simples é o certo — não otimizar prematuramente.
 """
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -38,9 +39,23 @@ class Job(BaseModel):
     criado_em: datetime
 
 
-# Job store em memória — dict protegido por lock
+# Job store em memória — dict protegido por lock e retenção limitada.
+MAX_RETAINED_JOBS = max(1, int(os.environ.get("MAX_RETAINED_JOBS", "1000")))
 _jobs: dict[str, Job] = {}
 _jobs_lock = threading.Lock()
+
+
+def _prune_terminal_jobs() -> None:
+    """Mantém jobs pendentes/ativos e remove os terminais mais antigos."""
+    terminal = {JobStatus.CONCLUIDO, JobStatus.ERRO}
+    while len(_jobs) >= MAX_RETAINED_JOBS:
+        oldest_terminal = next(
+            (job_id for job_id, job in _jobs.items() if job.status in terminal),
+            None,
+        )
+        if oldest_terminal is None:
+            break
+        _jobs.pop(oldest_terminal, None)
 
 
 def criar_job() -> Job:
@@ -52,6 +67,7 @@ def criar_job() -> Job:
         criado_em=datetime.now(timezone.utc),
     )
     with _jobs_lock:
+        _prune_terminal_jobs()
         _jobs[job_id] = job
     return job
 
@@ -76,3 +92,8 @@ def remover_job(job_id: str) -> None:
     """Remove um job do store."""
     with _jobs_lock:
         _jobs.pop(job_id, None)
+
+
+def quantidade_jobs() -> int:
+    with _jobs_lock:
+        return len(_jobs)

@@ -19,18 +19,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s
 logger = logging.getLogger("run_pipeline")
 
 
+_http_session = requests.Session()
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
+    # ReadTimeout não é seguro para retry: o servidor pode continuar
+    # processando a requisição original. Retentamos apenas falha de conexão.
+    retry=retry_if_exception_type(requests.ConnectionError),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 def _post_com_retry(url: str, **kwargs):
-    """
-    Faz um POST com retry automático para erros transientes.
-    Não retenta para erros 4xx (erros de input do cliente).
-    """
-    resp = requests.post(url, **kwargs)
+    """POST para operações idempotentes antes de iniciarem processamento."""
+    resp = _http_session.post(url, **kwargs)
     resp.raise_for_status()
     return resp
 
@@ -49,7 +51,7 @@ FINAL_OUTPUT_DIR_HOST = DATA_DIR / "final_output"
 
 DIFFUSION_STEPS_DRAFT = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_DRAFT", "35"))
 DIFFUSION_STEPS_FINAL = int(os.environ.get("SEEDVC_DIFFUSION_STEPS_FINAL", "75"))
-SEEDVC_TIMEOUT_S = 300  # não deixa a chamada pendurada indefinidamente
+SEEDVC_TIMEOUT_S = int(os.environ.get("SEEDVC_TIMEOUT_S", "600"))
 
 
 class RunNameInvalido(Exception):
@@ -116,7 +118,10 @@ def converter_chunk_seedvc(
     (modelo já carregado em memória -- sem custo de reload por chunk)."""
     saida_container = f"{converted_dir_container}/part_{indice:03d}.wav"
 
-    resp = _post_com_retry(
+    # Não há retry automático de ReadTimeout. O Seed-VC pode continuar
+    # executando mesmo que o cliente desista; reenviar criaria inferências
+    # duplicadas e poderia carregar o mesmo modelo concorrentemente.
+    resp = _http_session.post(
         f"{SEEDVC_URL}/convert",
         json={
             "source_path": chunk_path_container,
@@ -125,10 +130,14 @@ def converter_chunk_seedvc(
             "run_name": run_name,
             "diffusion_steps": diffusion_steps,
         },
-        timeout=SEEDVC_TIMEOUT_S,
+        timeout=(10, SEEDVC_TIMEOUT_S),
     )
+    resp.raise_for_status()
 
-    return converted_dir_host / f"part_{indice:03d}.wav"
+    output_path = converted_dir_host / f"part_{indice:03d}.wav"
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError(f"Seed-VC respondeu sem produzir output válido: {output_path}")
+    return output_path
 
 
 def gerar_narracao(

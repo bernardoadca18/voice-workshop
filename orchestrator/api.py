@@ -5,15 +5,17 @@ Uso:
     uvicorn api:app --host 0.0.0.0 --port 9000
 """
 import logging
+import os
+import queue
 import threading
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from jobs import Job, JobStatus, criar_job, obter_job, atualizar_job, remover_job
+from jobs import Job, JobStatus, criar_job, obter_job, atualizar_job, remover_job, quantidade_jobs
 from run_pipeline import gerar_narracao, validar_run_name, RunNameInvalido
 
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +27,10 @@ app = FastAPI(title="Voice Workshop API", version="0.1.0")
 # podem processar duas requisições em paralelo sem disputar VRAM e
 # colidir em diretórios/containers compartilhados. Serializa aqui.
 _pipeline_lock = threading.Lock()
+MAX_QUEUED_JOBS = max(1, int(os.environ.get("MAX_QUEUED_JOBS", "100")))
+_job_queue: queue.Queue[tuple[str, str, str, str]] = queue.Queue(
+    maxsize=MAX_QUEUED_JOBS
+)
 
 
 class NarracaoRequest(BaseModel):
@@ -47,17 +53,38 @@ def _processar_job(job_id: str, texto: str, run_name: str, qualidade: str) -> No
         atualizar_job(job_id, status=JobStatus.ERRO, erro=str(e))
 
 
+def _job_worker() -> None:
+    """Único consumidor: batch vira fila, nunca uma pilha de threads bloqueadas."""
+    while True:
+        payload = _job_queue.get()
+        try:
+            _processar_job(*payload)
+        finally:
+            _job_queue.task_done()
+
+
+_worker_thread = threading.Thread(
+    target=_job_worker,
+    name="voice-workshop-job-worker",
+    daemon=True,
+)
+_worker_thread.start()
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "queue_depth": _job_queue.qsize(),
+        "queue_capacity": MAX_QUEUED_JOBS,
+        "worker_alive": _worker_thread.is_alive(),
+        "retained_jobs": quantidade_jobs(),
+    }
 
 
 @app.post("/narrar")
-def narrar(req: NarracaoRequest, background_tasks: BackgroundTasks):
-    """
-    Inicia uma narração de forma assíncrona.
-    Retorna imediatamente com um job_id para consultar o status.
-    """
+def narrar(req: NarracaoRequest):
+    """Enfileira a narração sem criar uma thread bloqueada por requisição."""
     if not req.texto.strip():
         raise HTTPException(status_code=400, detail="Campo 'texto' vazio")
 
@@ -67,9 +94,20 @@ def narrar(req: NarracaoRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     job = criar_job()
-    background_tasks.add_task(_processar_job, job.id, req.texto, req.run_name, req.qualidade)
+    try:
+        _job_queue.put_nowait((job.id, req.texto, req.run_name, req.qualidade))
+    except queue.Full as exc:
+        remover_job(job.id)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Fila de narração cheia (limite: {MAX_QUEUED_JOBS})",
+        ) from exc
 
-    return {"job_id": job.id, "status_url": f"/jobs/{job.id}"}
+    return {
+        "job_id": job.id,
+        "status_url": f"/jobs/{job.id}",
+        "queue_depth": _job_queue.qsize(),
+    }
 
 
 @app.get("/jobs/{job_id}")
